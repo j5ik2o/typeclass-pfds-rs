@@ -1,0 +1,6 @@
+[package]
+name = "typeclass-pfds-rs"
+version = "0.0.1"
+authors = ["Junichi Kato <j5ik2o@gmail.com>"]
+
+[dependencies]
