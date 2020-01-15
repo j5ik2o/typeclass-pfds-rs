@@ -5,7 +5,6 @@ use typeclass::semigroup::Semigroup;
 use typeclass::pure::Pure;
 use typeclass::functor::Functor;
 use typeclass::flat_map::FlatMap;
-use typeclass::apply::{Apply, Applicator};
 
 #[derive(Debug)]
 pub enum StackError {
@@ -13,13 +12,17 @@ pub enum StackError {
     IndexOutOfRange,
 }
 
-pub trait Stack<T: Clone> {
-    fn cons(&self, value: T) -> Self;
-    fn head(&self) -> Result<T, StackError>;
+pub trait Stack<A: Clone> {
+    fn cons(&self, value: A) -> Self;
+    fn head(&self) -> Result<A, StackError>;
     fn tail(&self) -> Arc<Self>;
+    fn filter<F>(&self, f: F) -> Self where F: Fn(A) -> bool;
     fn size(&self) -> usize;
-    fn update(&self, index: u32, new_value: T) -> Result<Self, StackError> where Self: Sized;
-    fn get(&self, i: u32) -> Result<T, StackError>;
+    fn update(&self, index: u32, new_value: A) -> Result<Self, StackError> where Self: Sized;
+    fn get(&self, i: u32) -> Result<A, StackError>;
+    fn fold_left<B, F>(&self, z: B, f: F) -> B where F: Fn(B, A) -> B;
+    fn fold_right<B: Clone, F>(&self, z: B, f: F) -> B where F: Fn(A, B) -> B;
+    fn to_list(&self) -> Self;
 }
 
 #[derive(Debug, Clone)]
@@ -29,12 +32,25 @@ pub enum List<T> {
         head: T,
         tail: Arc<List<T>>,
     },
+    Filtered {
+        l: Arc<List<T>>,
+        p: fn(T) -> bool,
+    },
 }
 
 impl<T, U> HKT<U> for List<T> {
     type Current = T;
     type Target = List<U>;
 }
+
+//impl<A: Clone, B: Clone> Apply<B> for List<A> {
+//    fn ap(self, f: Applicator<B, Self>) -> <Self as HKT<B>>::Target {
+//        self.flat_map(|v| {
+//
+//        })
+//    }
+//}
+
 
 impl<A: Clone, B: Clone> FlatMap<B> for List<A> {
     fn flat_map<F>(self, f: F) -> Self::Target
@@ -76,11 +92,12 @@ impl<T> Empty for List<T> {
 
 impl<T: Clone> Semigroup for List<T> {
     fn combine(&self, ys: Self) -> Self where Self: Stack<T> {
-        if self.is_empty() {
-            ys
-        } else {
-            let x = self.head().unwrap();
-            self.tail().combine(ys).cons(x)
+        match *self {
+            List::Nil => ys,
+            List::Cons { head: ref h, tail: ref t } =>
+                List::Cons{ head: h.clone(), tail: Arc::new(t.combine(ys))},
+            List::Filtered { ref l, ref p } =>
+                List::Filtered { l: Arc::new(l.combine(ys)), p: *p }
         }
     }
 }
@@ -106,37 +123,49 @@ impl<A: Clone, B: Clone> Functor<B> for List<A> {
     }
 }
 
-impl<T: Clone> Stack<T> for List<T> {
-    fn cons(&self, value: T) -> List<T> {
+impl<A: Clone> Stack<A> for List<A> {
+    fn cons(&self, value: A) -> List<A> {
         List::Cons {
             head: value,
             tail: Arc::new(self.clone()),
         }
     }
 
-    fn head(&self) -> Result<T, StackError> {
+    fn head(&self) -> Result<A, StackError> {
         match *self {
             List::Nil => Err(StackError::NoSuchElementError),
-            List::Cons { head: ref value, .. } => Ok(value.clone())
+            List::Cons { head: ref value, .. } => Ok(value.clone()),
+            List::Filtered { ref l, ref p } => l.filter(p).head()
         }
     }
 
-    fn tail(&self) -> Arc<List<T>> {
+    fn tail(&self) -> Arc<List<A>> {
         match *self {
             List::Nil => Arc::new(List::Nil),
             List::Cons { ref tail, .. } => tail.clone(),
+            List::Filtered { ref l, ref p } => l.filter(p).tail()
         }
+    }
+
+    fn filter<F>(&self, f: F) -> Self where F: Fn(A) -> bool {
+        self.fold_right(List::Nil, |h, t| {
+            if f(h.clone()) {
+                List::Cons { head: h.clone(), tail: Arc::from(t.clone()) }
+            } else {
+                t
+            }
+        })
     }
 
     fn size(&self) -> usize {
         match *self {
             List::Nil => 0,
-            List::Cons { ref tail, .. } => 1 + tail.size()
+            List::Cons { ref tail, .. } => 1 + tail.size(),
+            List::Filtered { ref l, ref p } => l.filter(p).size()
         }
     }
 
-
-    fn update(&self, index: u32, new_value: T) -> Result<List<T>, StackError> where Self: Sized {
+    fn update(&self, index: u32, new_value: A) -> Result<List<A>, StackError> where Self: Sized {
         match *self {
             List::Nil => Err(StackError::IndexOutOfRange),
             List::Cons { head: ref value, ref tail } => match index {
@@ -145,17 +174,67 @@ impl<T: Clone> Stack<T> for List<T> {
                     let updated_tail = tail.update(index - 1, new_value)?;
                     Ok(updated_tail.cons(value.clone()))
                 }
-            }
+            },
+            List::Filtered { ref l, ref p } =>
+                l.filter(|x| p(x)).update(index, new_value)
         }
     }
 
-    fn get(&self, i: u32) -> Result<T, StackError> {
+    fn get(&self, i: u32) -> Result<A, StackError> {
         match *self {
             List::Nil => Err(StackError::NoSuchElementError),
             List::Cons { head: ref value, ref tail } => match i {
                 0 => Ok(value.clone()),
                 _ => tail.get(i - 1)
-            }
+            },
+            List::Filtered { ref l, ref p } =>
+                l.filter(p).get(i)
+        }
+    }
+
+    fn fold_left<B, F>(&self, z: B, f: F) -> B where F: Fn(B, A) -> B {
+        match *self {
+            List::Nil => z,
+            List::Cons { ref head, ref tail } =>
+                tail.fold_left(f(z, head.clone()), f),
+            List::Filtered { ref l, ref p } =>
+                l.fold_left(z, |r, x| if p(x.clone()) { f(r, x.clone()) } else { r })
+        }
+    }
+
+    /**
+    error[E0308]: mismatched types
+   --> src/data/stack.rs:212:30
+    |
+212 |                     Box::new(|b: B| g(f(a.clone(), b)))
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^ expected closure, found a different closure
+    |
+    = note: expected type `[closure@src/data/stack.rs:211:50: 211:58]`
+               found type `[closure@src/data/stack.rs:212:30: 212:55 g:_, f:_, a:_]`
+    = note: no two closures, even if identical, have the same type
+    = help: consider boxing your closure and/or using it as a trait object
+    */
+    fn fold_right<B: Clone, F>(&self, z: B, f: F) -> B where F: Fn(A, B) -> B {
+        match *self {
+            List::Nil => z,
+            List::Cons { .. } => {
+                //   def foldRight[B](z: B)(f: (A, B) => B): B =
+                //    foldLeft((b: B) => b)((g, a) => b => g(f(a, b)))(z)
+                let ffn= self.fold_left(Box::new(|b: B| b), |g, a: A| {
+                    Box::new(|b: B| g(f(a.clone(), b)))
+                });
+                ffn(z)
+            },
+            List::Filtered { ref l, ref p } =>
+                l.fold_right(z, |r, x| if p(r.clone()) { f(r.clone(), x) } else { x })
+        }
+    }
+
+    fn to_list(&self) -> Self {
+        match *self {
+            List::Nil => List::Nil,
+            List::Filtered { ref l, ref p } => l.filter(|x| p(x)),
+            _ => self.clone()
         }
     }
 }
@@ -165,6 +244,7 @@ fn suffixes<T: Clone>(stack: &Arc<List<T>>) -> List<Arc<List<T>>> {
     let tail_suffixes = match **stack {
         List::Nil => List::empty(),
         List::Cons { ref tail, .. } => suffixes(&tail),
+        List::Filtered { ref l, ref p } => suffixes(&Arc::new(l.filter(|x| p(x))))
     };
 
     return tail_suffixes.cons(stack.clone());
@@ -323,7 +403,7 @@ mod tests {
         let l3: List<i64> = l1.cons(3).cons(2);
         let l4: List<i64> = l2.combine(l3);
         let l5: List<i64> = l4.map(|x| x * 2);
-        let l6: List<i64> = l5.flat_map(|x| List::Nil);
+        let l6: List<i64> = l5.flat_map(|_| List::Nil);
         println!("{:?}", l2);
         println!("{:?}", l6);
     }
