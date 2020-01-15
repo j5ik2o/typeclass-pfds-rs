@@ -4,6 +4,8 @@ use typeclass::empty::Empty;
 use typeclass::semigroup::Semigroup;
 use typeclass::pure::Pure;
 use typeclass::functor::Functor;
+use typeclass::flat_map::FlatMap;
+use typeclass::apply::{Apply, Applicator};
 
 #[derive(Debug)]
 pub enum StackError {
@@ -24,7 +26,7 @@ pub trait Stack<T: Clone> {
 pub enum List<T> {
     Nil,
     Cons {
-        value: T,
+        head: T,
         tail: Arc<List<T>>,
     },
 }
@@ -32,6 +34,26 @@ pub enum List<T> {
 impl<T, U> HKT<U> for List<T> {
     type Current = T;
     type Target = List<U>;
+}
+
+impl<A: Clone, B: Clone> FlatMap<B> for List<A> {
+    fn flat_map<F>(self, f: F) -> Self::Target
+        where
+            Self: Stack<A>,
+            F: Fn(A) -> <Self as HKT<B>>::Target,
+    {
+        if self.is_empty() {
+            List::Nil
+        } else {
+            let mut result: List<B> = List::empty();
+            let mut cur: &List<A> = &self;
+            while let List::Cons { ref head, ref tail } = *cur {
+                result = result.combine(f(head.clone()));
+                cur = tail
+            }
+            result
+        }
+    }
 }
 
 impl<T: Clone> Pure<T> for List<T> {
@@ -63,8 +85,8 @@ impl<T: Clone> Semigroup for List<T> {
     }
 }
 
-impl<A : Clone, B: Clone> Functor<B> for List<A> {
-    fn fmap<F>(self, f: F) -> Self::Target
+impl<A: Clone, B: Clone> Functor<B> for List<A> {
+    fn map<F>(self, f: F) -> Self::Target
         where
         // A is Self::Current
             Self: Stack<A>,
@@ -75,8 +97,8 @@ impl<A : Clone, B: Clone> Functor<B> for List<A> {
         } else {
             let mut result: List<B> = List::empty();
             let mut cur: &List<A> = &self;
-            while let List::Cons{ ref value, ref tail} = *cur {
-                result = result.cons(f(value.clone()));
+            while let List::Cons { ref head, ref tail } = *cur {
+                result = result.cons(f(head.clone()));
                 cur = tail
             }
             result
@@ -87,7 +109,7 @@ impl<A : Clone, B: Clone> Functor<B> for List<A> {
 impl<T: Clone> Stack<T> for List<T> {
     fn cons(&self, value: T) -> List<T> {
         List::Cons {
-            value: value,
+            head: value,
             tail: Arc::new(self.clone()),
         }
     }
@@ -95,7 +117,7 @@ impl<T: Clone> Stack<T> for List<T> {
     fn head(&self) -> Result<T, StackError> {
         match *self {
             List::Nil => Err(StackError::NoSuchElementError),
-            List::Cons { ref value, .. } => Ok(value.clone())
+            List::Cons { head: ref value, .. } => Ok(value.clone())
         }
     }
 
@@ -117,7 +139,7 @@ impl<T: Clone> Stack<T> for List<T> {
     fn update(&self, index: u32, new_value: T) -> Result<List<T>, StackError> where Self: Sized {
         match *self {
             List::Nil => Err(StackError::IndexOutOfRange),
-            List::Cons { ref value, ref tail } => match index {
+            List::Cons { head: ref value, ref tail } => match index {
                 0 => Ok(tail.clone().cons(new_value)),
                 _ => {
                     let updated_tail = tail.update(index - 1, new_value)?;
@@ -130,7 +152,7 @@ impl<T: Clone> Stack<T> for List<T> {
     fn get(&self, i: u32) -> Result<T, StackError> {
         match *self {
             List::Nil => Err(StackError::NoSuchElementError),
-            List::Cons { ref value, ref tail } => match i {
+            List::Cons { head: ref value, ref tail } => match i {
                 0 => Ok(value.clone()),
                 _ => tail.get(i - 1)
             }
@@ -155,6 +177,7 @@ mod tests {
     use std::sync::Arc;
     use typeclass::semigroup::Semigroup;
     use typeclass::functor::Functor;
+    use typeclass::flat_map::FlatMap;
 
     #[test]
     fn empty_is_empty() {
@@ -299,8 +322,9 @@ mod tests {
         assert_eq!(l2.size(), 1);
         let l3: List<i64> = l1.cons(3).cons(2);
         let l4: List<i64> = l2.combine(l3);
-        let l5: List<i64> = l4.fmap(|x| x * 2);
+        let l5: List<i64> = l4.map(|x| x * 2);
+        let l6: List<i64> = l5.flat_map(|x| List::Nil);
         println!("{:?}", l2);
-        println!("{:?}", l5);
+        println!("{:?}", l6);
     }
 }

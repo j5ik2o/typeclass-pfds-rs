@@ -1,13 +1,13 @@
 use typeclass::hkt::HKT;
 
-pub trait Chain<B>: HKT<B> {
-    fn chain<F>(self, f: F) -> <Self as HKT<B>>::Target
+pub trait FlatMap<B>: HKT<B> {
+    fn flat_map<F>(self, f: F) -> <Self as HKT<B>>::Target
         where
             F: Fn(<Self as HKT<B>>::Current) -> <Self as HKT<B>>::Target;
 }
 
-impl<A, B> Chain<B> for Option<A> {
-    fn chain<F>(self, f: F) -> Self::Target
+impl<A, B> FlatMap<B> for Option<A> {
+    fn flat_map<F>(self, f: F) -> Self::Target
         where
             F: FnOnce(A) -> <Self as HKT<B>>::Target,
     {
@@ -15,8 +15,8 @@ impl<A, B> Chain<B> for Option<A> {
     }
 }
 
-impl<A, B, E> Chain<B> for Result<A, E> {
-    fn chain<F>(self, f: F) -> Self::Target
+impl<A, B, E> FlatMap<B> for Result<A, E> {
+    fn flat_map<F>(self, f: F) -> Self::Target
         where
             F: FnOnce(A) -> <Self as HKT<B>>::Target,
     {

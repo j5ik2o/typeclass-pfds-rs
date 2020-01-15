@@ -1,4 +1,6 @@
+#[macro_use]
 pub mod typeclass;
+#[macro_use]
 pub mod data;
 
 #[cfg(test)]
